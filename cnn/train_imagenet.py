@@ -26,7 +26,6 @@ parser.add_argument('--learning_rate', type=float, default=0.1, help='init learn
 parser.add_argument('--momentum', type=float, default=0.9, help='momentum')
 parser.add_argument('--weight_decay', type=float, default=3e-5, help='weight decay')
 parser.add_argument('--report_freq', type=float, default=100, help='report frequency')
-parser.add_argument('--gpu', type=int, default=0, help='gpu device id')
 parser.add_argument('--epochs', type=int, default=250, help='num of training epochs')
 parser.add_argument('--init_channels', type=int, default=48, help='num of init channels')
 parser.add_argument('--layers', type=int, default=14, help='total number of layers')
@@ -38,12 +37,15 @@ parser.add_argument('--seed', type=int, default=0, help='random seed')
 parser.add_argument('--arch', type=str, default='DARTS', help='which architecture to use')
 parser.add_argument('--grad_clip', type=float, default=5., help='gradient clipping')
 parser.add_argument('--label_smooth', type=float, default=0.1, help='label smoothing')
-parser.add_argument('--gamma', type=float, default=0.97, help='learning rate decay')
-parser.add_argument('--decay_period', type=int, default=1, help='epochs between two learning rate decays')
+parser.add_argument('--lr_scheduler', type=str, default='linear', help='lr scheduler, [step, linear, cosine]')
+parser.add_argument('--gamma', type=float, default=0.97, help='learning rate decay') # cosine scheduler
+parser.add_argument('--decay_period', type=int, default=1, help='epochs between two learning rate decays') # cosine scheduler
+parser.add_argument('--gpu', type=int, default=0, help='gpu device id')
 parser.add_argument('--parallel', action='store_true', default=False, help='data parallelism')
+parser.add_argument('--resume', type=str, default=None, help='restart training from the given checkpoint')
 args = parser.parse_args()
 
-args.save = 'eval-{}-{}'.format(args.save, time.strftime("%Y%m%d-%H%M%S"))
+args.save = 'eval-imagenet-{}-{}'.format(args.save, time.strftime("%Y%m%d-%H%M%S"))
 utils.create_exp_dir(args.save, scripts_to_save=glob.glob('*.py'))
 
 log_format = '%(asctime)s %(message)s'
@@ -78,12 +80,16 @@ def main():
     sys.exit(1)
 
   np.random.seed(args.seed)
-  torch.cuda.set_device(args.gpu)
+  if args.parallel: # multi gpu
+    num_gpus = torch.cuda.device_count()
+    logging.info('num of gpu devices = %d' % num_gpus)
+  else: # single gpu
+    torch.cuda.set_device(args.gpu)
+    logging.info('gpu device = %d' % args.gpu)
   cudnn.benchmark = True
   torch.manual_seed(args.seed)
   cudnn.enabled=True
   torch.cuda.manual_seed(args.seed)
-  logging.info('gpu device = %d' % args.gpu)
   logging.info("args = %s", args)
 
   genotype = eval("genotypes.%s" % args.arch)
@@ -138,45 +144,107 @@ def main():
   valid_queue = torch.utils.data.DataLoader(
     valid_data, batch_size=args.batch_size, shuffle=False, pin_memory=True, num_workers=4)
 
-  scheduler = torch.optim.lr_scheduler.StepLR(optimizer, args.decay_period, gamma=args.gamma)
+  if args.lr_scheduler == 'step':
+    # DARTS code
+    scheduler = torch.optim.lr_scheduler.StepLR(optimizer, args.decay_period, gamma=args.gamma)
+  elif args.lr_scheduler == 'cosine' or args.lr_scheduler == 'linear':
+    # PCDARTS code
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, float(args.epochs))
+  else:
+    raise ValueError("Wrong learning rate scheduler")
 
-  best_acc_top1 = 0
-  for epoch in range(args.epochs):
+  # ---- resume ---- #
+  start_epoch = 0
+  best_acc_top1 = 0.0 
+  best_acc_top5 = 0.0 
+  best_acc_epoch = 0
+  if args.resume:
+    # in multi-gpu???
+    if os.path.isfile(args.resume):
+      logging.info("=> loading checkpoint {}".format(args.resume))
+      device = torch.device("cuda")
+      checkpoint = torch.load(args.resume, map_location=device)
+      start_epoch = checkpoint['epoch']
+      best_acc_top1 = checkpoint['best_acc_top1']
+      best_acc_top5 = checkpoint['best_acc_top5']
+      best_acc_epoch = checkpoint['best_acc_epoch']
+      model.load_state_dict(checkpoint['state_dict'])
+      optimizer.load_state_dict(checkpoint['optimizer'])
+      logging.info("=> loaded checkpoint {} (trained until epoch {})".format(args.resume, start_epoch-1))
+    else:
+      raise ValueError("Wrong args.resume")
+  else:
+        logging.info("=> training from scratch")
+
+  for epoch in range(start_epoch, args.epochs):
     scheduler.step()
-    logging.info('epoch %d lr %e', epoch, scheduler.get_lr()[0])
-    model.drop_path_prob = args.drop_path_prob * epoch / args.epochs
+    if args.lr_scheduler == 'cosine' or args.lr_scheduler == 'step':
+      scheduler.step()
+      current_lr = scheduler.get_lr()[0]
+    elif args.lr_scheduler == 'linear':
+      current_lr = adjust_lr(optimizer, epoch)
 
+    if epoch < 5 and args.batch_size > 256:
+      for param_group in optimizer.param_groups:
+        param_group['lr'] = args.learning_rate * (epoch + 1) / 5.0
+        logging.info('Warming-up epoch: %d, LR: %e', epoch, lr * (epoch + 1) / 5.0)
+    else:
+      logging.info('epoch %d lr %e', epoch, current_lr)
+
+    if args.parallel:
+      model.module.drop_path_prob = args.drop_path_prob * epoch / args.epochs
+    else:
+      model.drop_path_prob = args.drop_path_prob * epoch / args.epochs
+
+    epoch_start = time.time()
     train_acc, train_obj = train(train_queue, model, criterion_smooth, optimizer)
     logging.info('train_acc %f', train_acc)
 
     valid_acc_top1, valid_acc_top5, valid_obj = infer(valid_queue, model, criterion)
-    logging.info('valid_acc_top1 %f', valid_acc_top1)
-    logging.info('valid_acc_top5 %f', valid_acc_top5)
-
-    is_best = False
-    if valid_acc_top1 > best_acc_top1:
+    is_best = (valid_acc_top1 > best_acc_top1)
+    if is_best:
       best_acc_top1 = valid_acc_top1
-      is_best = True
+      best_acc_top5 = valid_acc_top5
+      best_acc_epoch = epoch + 1
+      utils.save(model, os.path.join(args.save, 'best_weights.pt'))
+    logging.info('valid_acc %f %f, best_acc %f %f (at epoch %d)', valid_acc_top1, valid_acc_top5, best_acc_top1, best_acc_top5, best_acc_epoch)
+    logging.info('epoch time %d sec.', time.time() - epoch_start)
 
     utils.save_checkpoint({
       'epoch': epoch + 1,
+      'best_acc_top1': best_acc_top1,
+      'best_acc_top5': best_acc_top5,
+      'best_acc_epoch': best_acc_epoch, 
       'state_dict': model.state_dict(),
       'best_acc_top1': best_acc_top1,
       'optimizer' : optimizer.state_dict(),
       }, is_best, args.save)
 
+  utils.save(model, os.path.join(args.save, 'weights.pt'))
+
+def adjust_lr(optimizer, epoch):
+  # Smaller slope for the last 5 epochs because lr * 1/250 is relatively large
+  if args.epochs -  epoch > 5:
+    lr = args.learning_rate * (args.epochs - 5 - epoch) / (args.epochs - 5)
+  else:
+    lr = args.learning_rate * (args.epochs - epoch) / ((args.epochs - 5) * 5)
+  for param_group in optimizer.param_groups:
+    param_group['lr'] = lr
+  return lr
 
 def train(train_queue, model, criterion, optimizer):
   objs = utils.AvgrageMeter()
   top1 = utils.AvgrageMeter()
   top5 = utils.AvgrageMeter()
+  batch_time = utils.AvgrageMeter()
   model.train()
 
+  num_steps = len(train_queue)
   for step, (input, target) in enumerate(train_queue):
-    target = target.cuda(async=True)
-    input = input.cuda()
-    input = Variable(input)
-    target = Variable(target)
+    target = target.cuda(non_blocking=True)
+    input = input.cuda(non_blocking=True)
+
+    batch_start = time.time()
 
     optimizer.zero_grad()
     logits, logits_aux = model(input)
@@ -191,12 +259,13 @@ def train(train_queue, model, criterion, optimizer):
 
     prec1, prec5 = utils.accuracy(logits, target, topk=(1, 5))
     n = input.size(0)
-    objs.update(loss.data[0], n)
-    top1.update(prec1.data[0], n)
-    top5.update(prec5.data[0], n)
+    objs.update(loss.item(), n)
+    top1.update(prec1.item(), n)
+    top5.update(prec5.item(), n)
 
-    if step % args.report_freq == 0:
-      logging.info('train %03d %e %f %f', step, objs.avg, top1.avg, top5.avg)
+    batch_time.update(time.time() - batch_start)
+    if step % args.report_freq == 0 or step == num_steps:
+      logging.info('train (%03d/%d) loss: %e top1: %f top5: %f batchtime: ', step, num_steps, objs.avg, top1.avg, top5.avg, batch_time.avg)
 
   return top1.avg, objs.avg
 
@@ -207,21 +276,23 @@ def infer(valid_queue, model, criterion):
   top5 = utils.AvgrageMeter()
   model.eval()
 
-  for step, (input, target) in enumerate(valid_queue):
-    input = Variable(input, volatile=True).cuda()
-    target = Variable(target, volatile=True).cuda(async=True)
+  num_steps = len(valid_queue)
+  with torch.no_grad():
+    for step, (input, target) in enumerate(valid_queue):
+      input = input.cuda(non_blocking=True)
+      target = target.cuda(non_blocking=True)
 
-    logits, _ = model(input)
-    loss = criterion(logits, target)
+      logits, _ = model(input)
+      loss = criterion(logits, target)
 
-    prec1, prec5 = utils.accuracy(logits, target, topk=(1, 5))
-    n = input.size(0)
-    objs.update(loss.data[0], n)
-    top1.update(prec1.data[0], n)
-    top5.update(prec5.data[0], n)
+      prec1, prec5 = utils.accuracy(logits, target, topk=(1, 5))
+      n = input.size(0)
+      objs.update(loss.item(), n)
+      top1.update(prec1.item(), n)
+      top5.update(prec5.item(), n)
 
-    if step % args.report_freq == 0:
-      logging.info('valid %03d %e %f %f', step, objs.avg, top1.avg, top5.avg)
+      if step % args.report_freq == 0 or step == num_steps:
+        logging.info('valid (%03d/%d) loss: %e top1: %f top5: %f', step, num_steps, objs.avg, top1.avg, top5.avg)
 
   return top1.avg, top5.avg, objs.avg
 

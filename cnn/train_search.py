@@ -113,9 +113,10 @@ def main():
     genotype = model.genotype()
     logging.info('genotype = %s', genotype)
 
-    print(F.softmax(model.alphas_normal, dim=-1))
-    print(F.softmax(model.alphas_reduce, dim=-1))
+    logging.info(F.softmax(model.alphas_normal, dim=-1))
+    logging.info(F.softmax(model.alphas_reduce, dim=-1))
 
+    epoch_start = time.time()
     # training
     train_acc, train_obj = train(train_queue, valid_queue, model, architect, criterion, optimizer, lr)
     logging.info('train_acc %f', train_acc)
@@ -123,24 +124,31 @@ def main():
     # validation
     valid_acc, valid_obj = infer(valid_queue, model, criterion)
     logging.info('valid_acc %f', valid_acc)
+    
+    logging.info('epoch time %d sec.', time.time() - epoch_start)
 
     utils.save(model, os.path.join(args.save, 'weights.pt'))
+    torch.save(model.arch_parameters(), os.path.join(args.save, 'alphas.pt'))
 
 
 def train(train_queue, valid_queue, model, architect, criterion, optimizer, lr):
   objs = utils.AvgrageMeter()
   top1 = utils.AvgrageMeter()
   top5 = utils.AvgrageMeter()
+  model.train()
 
+  num_steps = len(train_queue)
   for step, (input, target) in enumerate(train_queue):
-    model.train()
     n = input.size(0)
-
+    #input = Variable(input, requires_grad=False).cuda(non_blocking=True)
+    #target = Variable(target, requires_grad=False).cuda(non_blocking=True)
     input = Variable(input, requires_grad=False).cuda()
     target = Variable(target, requires_grad=False).cuda(async=True)
 
     # get a random minibatch from the search queue with replacement
     input_search, target_search = next(iter(valid_queue))
+    #input_search = Variable(input_search, requires_grad=False).cuda(non_blocking=True)
+    #target_search = Variable(target_search, requires_grad=False).cuda(non_blocking=True)
     input_search = Variable(input_search, requires_grad=False).cuda()
     target_search = Variable(target_search, requires_grad=False).cuda(async=True)
 
@@ -155,12 +163,12 @@ def train(train_queue, valid_queue, model, architect, criterion, optimizer, lr):
     optimizer.step()
 
     prec1, prec5 = utils.accuracy(logits, target, topk=(1, 5))
-    objs.update(loss.data[0], n)
-    top1.update(prec1.data[0], n)
-    top5.update(prec5.data[0], n)
+    objs.update(loss.item(), n)
+    top1.update(prec1.item(), n)
+    top5.update(prec5.item(), n)
 
-    if step % args.report_freq == 0:
-      logging.info('train %03d %e %f %f', step, objs.avg, top1.avg, top5.avg)
+    if step % args.report_freq == 0 or step == num_steps-1:
+      logging.info('train (%03d/%d) loss: %e top1: %f top5: %f', step, num_steps, objs.avg, top1.avg, top5.avg)
 
   return top1.avg, objs.avg
 
@@ -171,21 +179,24 @@ def infer(valid_queue, model, criterion):
   top5 = utils.AvgrageMeter()
   model.eval()
 
-  for step, (input, target) in enumerate(valid_queue):
-    input = Variable(input, volatile=True).cuda()
-    target = Variable(target, volatile=True).cuda(async=True)
+  num_steps = len(valid_queue)
+  with torch.no_grad():
+    for step, (input, target) in enumerate(valid_queue):
+      input = Variable(input, requires_grad=False).cuda(non_blocking=True)
+      target = Variable(target, requires_grad=False).cuda(non_blocking=True)
 
-    logits = model(input)
-    loss = criterion(logits, target)
+      logits = model(input)
+      loss = criterion(logits, target)
 
-    prec1, prec5 = utils.accuracy(logits, target, topk=(1, 5))
-    n = input.size(0)
-    objs.update(loss.data[0], n)
-    top1.update(prec1.data[0], n)
-    top5.update(prec5.data[0], n)
+      prec1, prec5 = utils.accuracy(logits, target, topk=(1, 5))
+      n = input.size(0)
 
-    if step % args.report_freq == 0:
-      logging.info('valid %03d %e %f %f', step, objs.avg, top1.avg, top5.avg)
+      objs.update(loss.item(), n)
+      top1.update(prec1.item(), n)
+      top5.update(prec5.item(), n)
+
+      if step % args.report_freq == 0 or step == num_steps-1:
+        logging.info('valid (%03d/%d) loss: %e top1: %f top5: %f', step, num_steps, objs.avg, top1.avg, top5.avg)
 
   return top1.avg, objs.avg
 
