@@ -202,7 +202,7 @@ def infer(valid_queue, model, criterion):
       top1.update(prec1.item(), n)
       top5.update(prec5.item(), n)
 
-      if step % args.report_freq == 0 or steps == num_steps:
+      if step % args.report_freq == 0 or step == num_steps:
         logging.info('valid (%03d/%d) loss: %e top1: %f top5: %f', step, num_steps, objs.avg, top1.avg, top5.avg)
 
   return top1.avg, objs.avg
