@@ -140,17 +140,17 @@ def train(train_queue, valid_queue, model, architect, criterion, optimizer, lr):
   num_steps = len(train_queue)
   for step, (input, target) in enumerate(train_queue):
     n = input.size(0)
-    #input = Variable(input, requires_grad=False).cuda(non_blocking=True)
-    #target = Variable(target, requires_grad=False).cuda(non_blocking=True)
-    input = Variable(input, requires_grad=False).cuda()
-    target = Variable(target, requires_grad=False).cuda(async=True)
+    input = Variable(input, requires_grad=False).cuda(non_blocking=True)
+    target = Variable(target, requires_grad=False).cuda(non_blocking=True)
+    #input = Variable(input, requires_grad=False).cuda()
+    #target = Variable(target, requires_grad=False).cuda(async=True)
 
     # get a random minibatch from the search queue with replacement
     input_search, target_search = next(iter(valid_queue))
-    #input_search = Variable(input_search, requires_grad=False).cuda(non_blocking=True)
-    #target_search = Variable(target_search, requires_grad=False).cuda(non_blocking=True)
-    input_search = Variable(input_search, requires_grad=False).cuda()
-    target_search = Variable(target_search, requires_grad=False).cuda(async=True)
+    input_search = Variable(input_search, requires_grad=False).cuda(non_blocking=True)
+    target_search = Variable(target_search, requires_grad=False).cuda(non_blocking=True)
+    #input_search = Variable(input_search, requires_grad=False).cuda()
+    #target_search = Variable(target_search, requires_grad=False).cuda(async=True)
 
     architect.step(input, target, input_search, target_search, lr, optimizer, unrolled=args.unrolled)
 

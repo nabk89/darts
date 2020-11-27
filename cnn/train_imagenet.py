@@ -265,7 +265,7 @@ def train(train_queue, model, criterion, optimizer):
 
     batch_time.update(time.time() - batch_start)
     if step % args.report_freq == 0 or step == num_steps:
-      logging.info('train (%03d/%d) loss: %e top1: %f top5: %f batchtime: ', step, num_steps, objs.avg, top1.avg, top5.avg, batch_time.avg)
+      logging.info('train (%03d/%d) loss: %e top1: %f top5: %f batchtime: %.2f sec', step, num_steps, objs.avg, top1.avg, top5.avg, batch_time.avg)
 
   return top1.avg, objs.avg
 
