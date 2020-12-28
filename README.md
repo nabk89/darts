@@ -4,18 +4,17 @@ Paper (Code base: [here](https://github.com/quark0/darts))
 > Hanxiao Liu, Karen Simonyan, Yiming Yang. (ICLR20)
 
 ## Requirements
+Prepare an environment using Anaconda (conda 4.6.11)
 ```
-Make an environment using Anaconda (conda 4.6.11)
 Python = 3.6.10, PyTorch = 1.4.0, torchvision == 0.5.0, graphviz = 0.13.2
 ```
-NOTE: PyTorch 0.4 is not supported at this moment and would lead to OOM.
 
 ## Datasets
 Although RNN can be searched on [origianl DARTS code](https://github.com/quark0/darts), this customized repository focuses on CNN search.
-
-CIFAR-10
-CIFAR-100
-SVHN
+```
+CIFAR-10, CIFAR-100, SVHN
+```
+The dataset can be speicified by adding ```--dataset [cifar10, cifar100, svhn]``` when executing ```train_search.py``` and ```train.py``` in both _search_ and _evaluation_ as below.
 
 ## Architecture search (using small proxy models)
 To carry out architecture search, run
@@ -35,7 +34,7 @@ cd cnn && python train_imagenet.py --auxiliary            # ImageNet
 ```
 Customized architectures are supported through the `--arch` flag once specified in `genotypes.py`.
 
-The CIFAR-10 result at the end of training is subject to variance due to the non-determinism of cuDNN back-prop kernels. _It would be misleading to report the result of only a single run_. By training the best cell (DARTS-2nd) from scratch, one should expect the average test error of 10 independent runs to fall in the range of 2.76 +/- 0.09% with high probability.
+The CIFAR-10 result at the end of training is subject to variance due to the non-determinism of cuDNN back-prop kernels. _It would be misleading to report the result of only a single run_. By training DARTS_V2 cell (which is the best cell discovered by DARTS authors) from scratch, one should expect the average test error of 10 independent runs to fall in the range of 2.76 +/- 0.09% with high probability.
 
 ## Visualization
 Package [graphviz](https://graphviz.readthedocs.io/en/stable/index.html) is required to visualize the learned cells
