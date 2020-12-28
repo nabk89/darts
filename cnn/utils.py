@@ -59,22 +59,31 @@ class Cutout(object):
         return img
 
 
-def _data_transforms_cifar10(args):
-  CIFAR_MEAN = [0.49139968, 0.48215827, 0.44653124]
-  CIFAR_STD = [0.24703233, 0.24348505, 0.26158768]
+def _data_transforms(args):
+  # reference
+  # https://github.com/automl/RobustDARTS/blob/master/src/utils.py
+  if args.dataset == 'cifar10':
+    MEAN = [0.49139968, 0.48215827, 0.44653124]
+    STD = [0.24703233, 0.24348505, 0.26158768]
+  elif args.dataset == 'cifar100':
+    MEAN = [0.5071, 0.4865, 0.4409]
+    STD = [0.2673, 0.2564, 0.2762]
+  elif args.dataset == 'svhn':
+    MEAN = [0.4377, 0.4438, 0.4728]
+    STD = [0.1980, 0.2010, 0.1970]
 
   train_transform = transforms.Compose([
     transforms.RandomCrop(32, padding=4),
     transforms.RandomHorizontalFlip(),
     transforms.ToTensor(),
-    transforms.Normalize(CIFAR_MEAN, CIFAR_STD),
+    transforms.Normalize(MEAN, STD),
   ])
   if args.cutout:
     train_transform.transforms.append(Cutout(args.cutout_length))
 
   valid_transform = transforms.Compose([
     transforms.ToTensor(),
-    transforms.Normalize(CIFAR_MEAN, CIFAR_STD),
+    transforms.Normalize(MEAN, STD),
     ])
   return train_transform, valid_transform
 
